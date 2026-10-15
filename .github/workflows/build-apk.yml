@@ -1,17 +1,14 @@
+
 name: Build StoxKart V14 Android APK
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
-  workflow_dispatch:
 
 permissions:
   contents: read
-
-concurrency:
-  group: stoxkart-android-${{ github.ref }}
-  cancel-in-progress: false
 
 jobs:
   build:
@@ -28,103 +25,59 @@ jobs:
         with:
           python-version: "3.10"
 
-      - name: Verify Android project files
-        shell: bash
+      - name: Install system dependencies
         run: |
-          set -euo pipefail
-          test -f main.py
-          test -f buildozer.spec
-
-      - name: Install Linux dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential git zip unzip openjdk-17-jdk \
-            autoconf automake libtool pkg-config cmake \
-            zlib1g-dev libncurses5-dev libncursesw5-dev \
-            libtinfo5 libffi-dev libssl-dev libltdl-dev libsqlite3-dev
+          sudo apt-get install -y \
+            git zip unzip openjdk-17-jdk \
+            autoconf automake libtool pkg-config \
+            zlib1g-dev libncurses-dev \
+            libtinfo6 cmake libffi-dev \
+            libssl-dev libltdl-dev \
+            build-essential ccache
 
-      - name: Install pinned build tools
-        shell: bash
+      - name: Verify Android project
         run: |
-          set -euo pipefail
+          test -f buildozer.spec || {
+            echo "ERROR: buildozer.spec must be in the repository root."
+            exit 1
+          }
+          test -f main.py || {
+            echo "ERROR: main.py must be in the repository root."
+            exit 1
+          }
+          echo "Android project files found."
+
+      - name: Install Buildozer
+        run: |
           python -m pip install --upgrade pip setuptools wheel
-          python -m pip install "buildozer==1.5.0" "Cython==0.29.36"
-
-      - name: Patch libffi configuration
-        shell: bash
-        run: |
-          set -euo pipefail
-          git clone --depth 1 --branch develop \
-            https://github.com/kivy/python-for-android.git \
-            "$GITHUB_WORKSPACE/python-for-android"
-
-          python - <<'PY'
-          from pathlib import Path
-          import re
-
-          recipe = Path(
-              "python-for-android/pythonforandroid/recipes/libffi/__init__.py"
-          )
-          source = recipe.read_text(encoding="utf-8")
-
-          if "--disable-multi-os-directory" not in source:
-              patched, count = re.subn(
-                  r"('--enable-shared'|\"--enable-shared\")\s*,\s*_env=env\)",
-                  lambda m: (
-                      f"{m.group(1)}, "
-                      "'--disable-multi-os-directory', _env=env)"
-                  ),
-                  source,
-                  count=1,
-              )
-              if count != 1:
-                  raise SystemExit(
-                      "Could not patch libffi recipe; stopping build."
-                  )
-              recipe.write_text(patched, encoding="utf-8")
-
-          print("libffi configuration patch applied.")
-          PY
+          python -m pip install "Cython==0.29.36" "buildozer==1.5.0"
 
       - name: Configure Android build
-        shell: bash
         run: |
-          set -euo pipefail
-
-          sed -i '/^[[:space:]]*p4a\.source_dir[[:space:]]*=/d' buildozer.spec
-          sed -i "/^\[app\]/a p4a.source_dir = $GITHUB_WORKSPACE/python-for-android" buildozer.spec
-
-          if grep -q '^android.ndk[[:space:]]*=' buildozer.spec; then
-            sed -i 's/^android.ndk[[:space:]]*=.*/android.ndk = 28c/' buildozer.spec
-          else
-            sed -i '/^\[app\]/a android.ndk = 28c' buildozer.spec
-          fi
-
-          grep -nE '^(\[app\]|p4a\.source_dir|android\.ndk)' buildozer.spec
+          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME" >> "$GITHUB_ENV"
 
       - name: Build debug APK
-        shell: bash
         run: |
           set -o pipefail
-          buildozer -v android debug 2>&1 | tee build.log
+          buildozer android debug 2>&1 | tee build.log
 
       - name: Upload APK
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: StoxKart-V14-Android-debug-APK
+          name: StoxKart-V14-Android-APK
           path: bin/*.apk
           if-no-files-found: error
           retention-days: 14
 
-      - name: Upload build log
-        if: always()
+      - name: Upload build log on failure
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: StoxKart-V14-build-log
+          name: StoxKart-V14-Build-Log
           path: build.log
-          if-no-files-found: warn
-          retention-days: 14
+          if-no-files-found: ignore
+          retention-days: 7
